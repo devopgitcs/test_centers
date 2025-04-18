@@ -29,7 +29,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Fetch repo‑level runners
+      - name: Fetch repo-level runners
         id: fetch
         run: |
           curl -s -H "Accept: application/vnd.github+json" \
@@ -38,7 +38,7 @@ jobs:
                    https://api.github.com/repos/devopgitcs/test_centers/actions/runners \
             > runners.json
 
-      - name: Filter by runner‑labels
+      - name: Filter by runner-labels
         id: filter
         run: |
           mapping=$(jq -c '.' .github/data/centers.json)
@@ -85,7 +85,10 @@ jobs:
     strategy:
       matrix:
         label: ${{ fromJson(needs.check-runners.outputs.valid_labels) }}
-    runs-on: [ self-hosted, ${{ matrix.label }} ]
+    # <-- BLOCK STYLE runs-on:
+    runs-on:
+      - self-hosted
+      - ${{ matrix.label }}
 
     steps:
       - name: Checkout code
