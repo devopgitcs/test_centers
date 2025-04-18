@@ -1,3 +1,4 @@
+# .github/workflows/docker_compose_deploy.yml
 name: Docker Compose Deploy
 
 on:
@@ -17,28 +18,20 @@ on:
         type: string
 
 permissions:
-  contents: read   # to checkout code
+  contents: read
 
 jobs:
   deploy:
     runs-on: [ self-hosted, ${{ inputs.center_id }} ]
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Log deployment info
-        run: |
+      - uses: actions/checkout@v4
+      - run: |
           echo "Deploying center: ${{ inputs.center_id }}"
           echo "Image tag:        ${{ inputs.tag_name }}"
           [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:      ${{ inputs.run_uuid }}"
-
-      - name: Run Docker Compose
-        run: |
+      - run: |
           export IMAGE_TAG=${{ inputs.tag_name }}
           export CENTER_ID=${{ inputs.center_id }}
           docker-compose pull
           docker-compose up -d --build
-
-      - name: Verify services
-        run: docker-compose ps
+      - run: docker-compose ps
