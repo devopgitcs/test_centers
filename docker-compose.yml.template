@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  app:
+    image: "alpine:3.18"    # dummy image for test
+    command: ["echo","Deploying center ${REPLACE_CENTER_ID} with tag ${IMAGE_TAG}"]
+    environment:
+      - TAG=${IMAGE_TAG}
+      - CENTER=${REPLACE_CENTER_ID}
+

@@ -1,0 +1,84 @@
+name: Query Runners and Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        required: true
+        type: string
+      run_uuid:
+        required: false
+        type: string
+
+jobs:
+  check-runners:
+    runs-on: ubuntu-latest
+    outputs:
+      valid_centers: ${{ steps.filter-runners.outputs.valid_centers }}
+      offline_centers: ${{ steps.filter-runners.outputs.offline_centers }}
+      no_label_centers: ${{ steps.filter-runners.outputs.no_label_centers }}
+
+    steps:
+      - name: Get Repo‑Level Runners
+        id: fetch-runners
+        run: |
+          RESPONSE=$(curl -s \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/devopgitcs/test_centers/actions/runners)
+          echo "$RESPONSE" | jq -c '.runners[]' > runners.json
+          echo "runners=$(cat runners.json)" >> $GITHUB_ENV
+
+      - name: Load Centers Mapping
+        id: load-centers
+        run: |
+          CENTER_MAPPING=$(jq -c '.' .github/data/centers.json)
+          echo "CENTER_MAPPING=$CENTER_MAPPING" >> $GITHUB_ENV
+
+      - name: Filter Centers
+        id: filter-runners
+        run: |
+          OFFLINE=$(jq -r 'select(.status=="offline")|.name' runners.json)
+          VALID=(); OFF=(); NO_LABEL=()
+          for CENT in $(echo "${{ env.CENTER_MAPPING }}" | jq -r 'keys[]'); do
+            LABEL=$(echo "${{ env.CENTER_MAPPING }}" | jq -r ".[\"$CENT\"]")
+            RUNNER=$(jq -r --arg L "$LABEL" '.[]|select(.labels|index($L))|.name' runners.json)
+            if [ -z "$RUNNER" ]; then
+              NO_LABEL+=("$CENT")
+            elif echo "$OFFLINE" | grep -qx "$RUNNER"; then
+              OFF+=("$CENT")
+            else
+              VALID+=("$CENT")
+            fi
+          done
+
+          echo "::set-output name=valid_centers::$(printf '%s\n' "${VALID[@]}" | jq -R . | jq -s .)"
+          echo "::set-output name=offline_centers::$(printf '%s\n' "${OFF[@]}"   | jq -R . | jq -s .)"
+          echo "::set-output name=no_label_centers::$(printf '%s\n' "${NO_LABEL[@]}"| jq -R . | jq -s .)"
+
+      - name: Warn or Fail
+        run: |
+          echo "Offline centers: ${{ steps.filter-runners.outputs.offline_centers }}"
+          echo "No‑label centers: ${{ steps.filter-runners.outputs.no_label_centers }}"
+          if [ "$(echo '${{ steps.filter-runners.outputs.valid_centers }}' | jq length)" -eq 0 ]; then
+            echo "❌ No valid centers found – failing."
+            exit 1
+          fi
+
+  deploy:
+    needs: check-runners
+    strategy:
+      matrix:
+        center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
+    runs-on: ${{ matrix.center }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Docker Compose Deploy
+        run: |
+          sed -e "s/\${REPLACE_CENTER_ID}/${{ matrix.center }}/" \
+              -e "s/\${IMAGE_TAG}/${{ inputs.tag_name }}/" \
+              docker-compose.yml.template > docker-compose.yml
+          docker-compose up --build
+
