@@ -11,12 +11,15 @@ on:
         required: false
         type: string
 
+env:
+  AWS_REGION: us-east-1
+
 jobs:
   check-runners:
     runs-on: ubuntu-latest
     permissions:
       contents: read      # to read centers.json
-      actions: none       # we call the Actions API with our PAT
+      actions: none       # we use our PAT for the API call
     outputs:
       valid_centers:   ${{ steps.filter.outputs.valid_centers }}
       missing_centers: ${{ steps.filter.outputs.missing_centers }}
@@ -25,21 +28,21 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Debug ‑ show centers.json
+      - name: Debug – show centers.json
         run: |
           echo "=== centers.json ==="
           cat .github/data/centers.json
           echo
 
-      - name: Fetch repo‑level runners
+      - name: Fetch org‑level self‑hosted runners
         id: fetch
         run: |
-          echo "=== curl runners.json ==="
+          echo "=== curl org runners.json ==="
           curl -s -L \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/devopgitcs/test_centers/actions/runners \
+            https://api.github.com/orgs/devopgitcs/actions/runners \
             > runners.json
           echo "=== runners.json ==="
           cat runners.json
@@ -58,11 +61,11 @@ jobs:
           for center in $CENTER_IDS; do
             # lookup the runner‑label for this center
             label=$(jq -r --arg C "$center" '.[$C]' .github/data/centers.json)
-            echo "→ Center '$center' expects label '$label'"
+            echo "→ Center '$center' expects runner‑label '$label'"
 
-            # does any runner have exactly that label?
-            if jq -e --arg L "$label" '.runners[] | select(.labels[].name==$L)' runners.json >/dev/null; then
-              echo "  ✔ Found a runner with label '$label'"
+            # does any runner have exactly that custom label?
+            if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L)' runners.json >/dev/null; then
+              echo "  ✔ Found runner with label '$label'"
               VALID+=("$center")
             else
               echo "  ✖ No runner with label '$label'"
@@ -83,6 +86,7 @@ jobs:
             fi
           }
 
+          # write them as compact, safe-for‑$GITHUB_OUTPUT
           echo "valid_centers=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
           echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
 
@@ -91,7 +95,7 @@ jobs:
         run: |
           echo "⚠️  Skipping centers (no runner found): ${{ steps.filter.outputs.missing_centers }}"
 
-      - name: Fail if nothing valid
+      - name: Fail if none valid
         if: ${{ steps.filter.outputs.valid_centers == '[]' }}
         run: |
           echo "❌  No valid centers found—exiting."
