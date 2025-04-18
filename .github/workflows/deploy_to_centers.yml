@@ -1,3 +1,4 @@
+# .github/workflows/deploy_to_centers.yml
 name: Query Runners and Deploy
 
 on:
@@ -20,9 +21,9 @@ jobs:
       contents: read        # to read centers.json & template
       actions: none         # we use our PAT for the Actions API call
     outputs:
-      valid_labels:  ${{ steps.filter.outputs.valid_labels }}
-      offline_labels:${{ steps.filter.outputs.offline_labels }}
-      missing_labels:${{ steps.filter.outputs.missing_labels }}
+      valid_labels:   ${{ steps.filter.outputs.valid_labels }}
+      offline_labels: ${{ steps.filter.outputs.offline_labels }}
+      missing_labels: ${{ steps.filter.outputs.missing_labels }}
 
     steps:
       - name: Checkout code
@@ -40,15 +41,11 @@ jobs:
       - name: Filter by runner‑labels
         id: filter
         run: |
-          # load mapping: { "center_id": "custom-label", … }
           mapping=$(jq -c '.' .github/data/centers.json)
-
-          # which runners are offline?
           offline=$(jq -r '.runners[] | select(.status=="offline") | .name' runners.json)
 
           valid=(); off=(); missing=()
           for label in $(echo "$mapping" | jq -r '.[]'); do
-            # see if any runner has exactly that custom label
             runner=$(jq -r --arg L "$label" \
               '.runners[] | select(.labels[].name == $L) | .name' \
               runners.json)
@@ -62,7 +59,6 @@ jobs:
             fi
           done
 
-          # helper to build a compact JSON array
           to_json() {
             if [ $# -eq 0 ]; then
               echo '[]'
@@ -80,7 +76,7 @@ jobs:
           echo "⚠️ Offline labels: ${{ steps.filter.outputs.offline_labels }}"
           echo "⚠️ Missing labels: ${{ steps.filter.outputs.missing_labels }}"
           if [ "$(echo '${{ steps.filter.outputs.valid_labels }}' | jq length)" -eq 0 ]; then
-            echo "❌ No valid runners available—exiting."
+            echo "❌ No valid runners—exiting."
             exit 1
           fi
 
