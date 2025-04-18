@@ -1,3 +1,4 @@
+# .github/workflows/deploy_to_centers.yml
 name: Query Runners and Deploy
 
 on:
@@ -8,91 +9,95 @@ on:
         required: true
         type: string
       run_uuid:
-        description: (optional) run uuid for tracking
+        description: Optional run UUID for logging
         required: false
         type: string
 
+# these top‑level permissions are correct for what we do below
 permissions:
-  contents: read   # to pull down centers.json
-  actions: none    # we use our PAT for the runners API call
+  contents: read    # to pull down centers.json
+  actions: none     # we call the runners API with our PAT instead
 
 jobs:
   check-runners:
     runs-on: ubuntu-latest
+    # expose these for the downstream matrix
     outputs:
       valid_labels:    ${{ steps.filter.outputs.valid_labels }}
       missing_centers: ${{ steps.filter.outputs.missing_centers }}
 
     steps:
-      - name: Check out code
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Fetch organization runners
+      - name: Fetch all org‑level self‑hosted runners
         id: fetch
         run: |
           curl -sSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/orgs/devopgitcs/actions/runners \
           > runners.json
 
-      - name: Filter centers ↔ runner labels
+      - name: Filter centers → runner labels
         id: filter
         run: |
           VALID=()
           MISSING=()
 
-          # for each center_id in centers.json
+          # for each center_id defined in centers.json
           for center in $(jq -r 'keys_unsorted[]' .github/data/centers.json); do
-            # look up its runner label
+            # look up its configured runner_label
             label=$(jq -r --arg c "$center" '.[$c]' .github/data/centers.json)
 
-            # if any runner carries that label, accept it
-            if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L)' runners.json >/dev/null; then
+            # if we see *any* runner with that label, accept it
+            if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L)' runners.json > /dev/null; then
               VALID+=("$label")
             else
               MISSING+=("$center")
             fi
           done
 
-          # helper: bash‑array → compact JSON array
+          # helper to turn a bash array into a compact JSON array
           to_json() { printf '%s\n' "$@" | jq -R . | jq -s -c .; }
 
-          echo "valid_labels=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
+          # write both env‑style and set the step outputs
+          echo "valid_labels=$(to_json "${VALID[@]}")"    >> $GITHUB_OUTPUT
           echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
 
-      - name: Log any missing centers
+      - name: Warn about missing centers
         if: ${{ steps.filter.outputs.missing_centers != '[]' }}
         run: |
-          echo "Skipping centers with no runner found: ${{ steps.filter.outputs.missing_centers }}"
+          echo "Skipping these centers (no runner found): ${{ steps.filter.outputs.missing_centers }}"
 
-      - name: Fail if no runners available
+      - name: Fail if no valid runners remain
         if: ${{ steps.filter.outputs.valid_labels == '[]' }}
         run: |
-          echo "Error: No valid self‑hosted runners found. Exiting."
+          echo "Error: No valid self‑hosted runners available. Exiting."
           exit 1
 
   deploy:
     needs: check-runners
     strategy:
       matrix:
-        # matrix over *actual* runner labels we discovered
+        # we matrix over the *runner labels* we discovered
         label: ${{ fromJson(needs.check-runners.outputs.valid_labels) }}
-    runs-on: [ self-hosted, ${{ matrix.label }} ]
+    # this pins us to self-hosted + the exact label
+    runs-on:
+      - self-hosted
+      - ${{ matrix.label }}
 
     steps:
-      - name: Check out code
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Deploy with Docker Compose
         run: |
-          # you can pick up inputs if you like:
-          echo "Deploying runner label: ${{ matrix.label }}"
-          echo "Using image tag:     ${{ inputs.tag_name }}"
-          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:            ${{ inputs.run_uuid }}"
+          echo "Deploying on runner-label: ${{ matrix.label }}"
+          echo "Using image tag:          ${{ inputs.tag_name }}"
+          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:                ${{ inputs.run_uuid }}"
 
-          # pull/build + launch your existing docker-compose.yml
+          # use your existing docker-compose.yml directly
           docker-compose pull
           docker-compose up -d --build
           docker-compose ps
