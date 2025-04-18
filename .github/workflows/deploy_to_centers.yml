@@ -1,90 +1,96 @@
-name: Deploy to Centers
+# .github/workflows/deploy_to_centers.yml
+ name: Deploy to Centers
 
-on:
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: Docker image tag to deploy
-        required: true
-        type: string
-      run_uuid:
-        description: Optional run UUID for tracking
-        required: false
-        type: string
+ on:
+   workflow_dispatch:
+     inputs:
+       tag_name:
+         description: Docker image tag to deploy
+         required: true
+         type: string
+       run_uuid:
+         description: Optional run UUID for tracking
+         required: false
+         type: string
 
-permissions:
-  contents: read   # to load centers.json
-  actions: none    # REST API calls use our PAT
+ permissions:
+   contents: read   # to load centers.json
+   actions: none    # REST API calls use our PAT
 
-jobs:
-  check-runners:
-    runs-on: ubuntu-latest
-    outputs:
-      valid_centers:   ${{ steps.filter.outputs.valid_centers }}
-      missing_centers: ${{ steps.filter.outputs.missing_centers }}
+ jobs:
+   check-runners:
+     runs-on: ubuntu-latest
+     outputs:
+       valid_centers:   ${{ steps.filter.outputs.valid_centers }}
+       missing_centers: ${{ steps.filter.outputs.missing_centers }}
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@v4
 
-      - name: Fetch self‑hosted runners (org)
-        id: fetch
-        run: |
-          curl -sSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
-            https://api.github.com/orgs/devopgitcs/actions/runners \
-          > runners.json
+       - name: Fetch self‑hosted runners (org)
+         id: fetch
+         run: |
+           curl -sSL \
+             -H "Accept: application/vnd.github+json" \
+             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
+             https://api.github.com/orgs/devopgitcs/actions/runners \
+           > runners.json
 
-      - name: Filter valid vs missing centers
-        id: filter
-        run: |
-          VALID=()
-          MISSING=()
+       - name: Filter valid vs missing centers
+         id: filter
+         run: |
+           VALID=()
+           MISSING=()
 
-          for center in $(jq -r 'keys_unsorted[]' .github/data/centers.json); do
-            label=$(jq -r --arg c "$center" '.[$c]' .github/data/centers.json)
-            if jq -e --arg L "$label" '.runners[] | select(.status=="online" and .labels[].name==$L)' runners.json >/dev/null; then
-              VALID+=("$center")
-            else
-              MISSING+=("$center")
-            fi
-          done
+           for center in $(jq -r 'keys_unsorted[]' .github/data/centers.json); do
+             label=$(jq -r --arg c "$center" '.[$c]' .github/data/centers.json)
+             if jq -e --arg L "$label" '.runners[] | select(.status=="online" and .labels[].name==$L)' runners.json >/dev/null; then
+               VALID+=("$center")
+             else
+               MISSING+=("$center")
+             fi
+           done
 
-          to_json() { printf '%s\n' "$@" | jq -R . | jq -s -c .; }
+           to_json() { printf '%s\n' "$@" | jq -R . | jq -s -c .; }
 
-          echo "valid_centers=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
-          echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
+           echo "valid_centers=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
+           echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
 
-      - name: Warn about missing
-        if: ${{ steps.filter.outputs.missing_centers != '[]' }}
-        run: |
-          echo "Skipping centers with no online runner:"
-          echo "${{ steps.filter.outputs.missing_centers }}"
++      - name: Show filtering results
++        run: |
++          echo "→ valid_centers:   ${{ steps.filter.outputs.valid_centers }}"
++          echo "→ missing_centers: ${{ steps.filter.outputs.missing_centers }}"
 
-      - name: Fail if none left
-        if: ${{ steps.filter.outputs.valid_centers == '[]' }}
-        run: |
-          echo "ERROR: no valid centers remain – exiting."
-          exit 1
+       - name: Warn about missing
+         if: ${{ steps.filter.outputs.missing_centers != '[]' }}
+         run: |
+           echo "Skipping centers with no online runner:"
+           echo "${{ steps.filter.outputs.missing_centers }}"
 
-  dispatch-deploy:
-    needs: check-runners
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
+       - name: Fail if none left
+         if: ${{ steps.filter.outputs.valid_centers == '[]' }}
+         run: |
+           echo "ERROR: no valid centers remain – exiting."
+           exit 1
 
-    steps:
-      - name: Trigger per‑center Docker‑Compose Deploy
-        uses: benc-uk/workflow-dispatch@v1
-        with:
-          token: ${{ secrets.ACTIONS_PAT }}
-          workflow: docker_compose_deploy.yml
-          ref: main
-          inputs: |
-            {
-              "tag_name": "${{ inputs.tag_name }}",
-              "run_uuid": "${{ inputs.run_uuid }}",
-              "center_id": "${{ matrix.center }}"
-            }
+   dispatch-deploy:
+     needs: check-runners
+     runs-on: ubuntu-latest
+     strategy:
+       matrix:
+         center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
+
+     steps:
+       - name: Trigger per‑center Docker‑Compose Deploy
+         uses: benc-uk/workflow-dispatch@v1
+         with:
+           token: ${{ secrets.ACTIONS_PAT }}
+           workflow: docker_compose_deploy.yml
+           ref: main
+           inputs: |
+             {
+               "tag_name": "${{ inputs.tag_name }}",
+               "run_uuid": "${{ inputs.run_uuid }}",
+               "center_id": "${{ matrix.center }}"
+             }
