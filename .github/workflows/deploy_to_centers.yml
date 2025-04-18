@@ -1,111 +1,98 @@
-# .github/workflows/deploy_to_centers.yml
 name: Query Runners and Deploy
 
 on:
   workflow_dispatch:
     inputs:
       tag_name:
+        description: Docker image tag to deploy
         required: true
         type: string
       run_uuid:
+        description: (optional) run uuid for tracking
         required: false
         type: string
+
+permissions:
+  contents: read   # to pull down centers.json
+  actions: none    # we use our PAT for the runners API call
 
 jobs:
   check-runners:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read      # to read centers.json
-      actions: none       # we call the Actions API with our PAT
     outputs:
-      valid_centers:   ${{ steps.filter.outputs.valid_centers }}
+      valid_labels:    ${{ steps.filter.outputs.valid_labels }}
       missing_centers: ${{ steps.filter.outputs.missing_centers }}
 
     steps:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Show centers.json
-        run: |
-          echo "=== centers.json ==="
-          cat .github/data/centers.json
-          echo
-
       - name: Fetch organization runners
         id: fetch
         run: |
-          echo "=== runners.json ==="
-          curl -s -L \
+          curl -sSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/orgs/devopgitcs/actions/runners \
-            > runners.json
-          cat runners.json
-          echo
+          > runners.json
 
-      - name: Filter available vs. missing centers
+      - name: Filter centers ↔ runner labels
         id: filter
         run: |
-          # build a list of the center IDs (the keys of centers.json)
-          CENTER_IDS=$(jq -r 'keys_unsorted[]' .github/data/centers.json)
-
           VALID=()
           MISSING=()
 
-          for center in $CENTER_IDS; do
-            label=$(jq -r --arg C "$center" '.[$C]' .github/data/centers.json)
-            echo "Center '$center' expects runner label '$label'"
+          # for each center_id in centers.json
+          for center in $(jq -r 'keys_unsorted[]' .github/data/centers.json); do
+            # look up its runner label
+            label=$(jq -r --arg c "$center" '.[$c]' .github/data/centers.json)
 
-            if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L)' runners.json > /dev/null; then
-              echo "  Found runner with label '$label'"
-              VALID+=("$center")
+            # if any runner carries that label, accept it
+            if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L)' runners.json >/dev/null; then
+              VALID+=("$label")
             else
-              echo "  No runner with label '$label'"
               MISSING+=("$center")
             fi
           done
 
-          # helper: bash array → compact JSON
-          to_json() {
-            if [ $# -eq 0 ]; then
-              echo "[]"
-            else
-              printf '%s\n' "$@" | jq -R . | jq -s -c .
-            fi
-          }
+          # helper: bash‑array → compact JSON array
+          to_json() { printf '%s\n' "$@" | jq -R . | jq -s -c .; }
 
-          # write outputs
-          echo "valid_centers=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
+          echo "valid_labels=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
           echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
 
-      - name: Warn about missing centers
+      - name: Log any missing centers
         if: ${{ steps.filter.outputs.missing_centers != '[]' }}
         run: |
-          echo "Skipping centers (no matching runner): ${{ steps.filter.outputs.missing_centers }}"
+          echo "Skipping centers with no runner found: ${{ steps.filter.outputs.missing_centers }}"
 
-      - name: Fail if no centers available
-        if: ${{ steps.filter.outputs.valid_centers == '[]' }}
+      - name: Fail if no runners available
+        if: ${{ steps.filter.outputs.valid_labels == '[]' }}
         run: |
-          echo "No valid centers found – exiting."
+          echo "Error: No valid self‑hosted runners found. Exiting."
           exit 1
 
   deploy:
     needs: check-runners
     strategy:
       matrix:
-        center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
-    runs-on: ${{ matrix.center }}
+        # matrix over *actual* runner labels we discovered
+        label: ${{ fromJson(needs.check-runners.outputs.valid_labels) }}
+    runs-on: [ self-hosted, ${{ matrix.label }} ]
 
     steps:
-      - name: Dispatch Docker Compose Deploy
-        uses: benc-uk/workflow-dispatch@v1
-        with:
-          workflow: docker_compose_deploy.yml
-          token: ${{ secrets.ACTIONS_PAT }}
-          inputs: |
-            {
-              "tag_name": "${{ inputs.tag_name }}",
-              "run_uuid": "${{ inputs.run_uuid }}",
-              "center_id": "${{ matrix.center }}"
-            }
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Deploy with Docker Compose
+        run: |
+          # you can pick up inputs if you like:
+          echo "Deploying runner label: ${{ matrix.label }}"
+          echo "Using image tag:     ${{ inputs.tag_name }}"
+          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:            ${{ inputs.run_uuid }}"
+
+          # pull/build + launch your existing docker-compose.yml
+          docker-compose pull
+          docker-compose up -d --build
+          docker-compose ps
