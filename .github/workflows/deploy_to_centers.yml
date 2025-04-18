@@ -1,15 +1,12 @@
-# .github/workflows/deploy_to_centers.yml
 name: Query Runners and Deploy
 
 on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Docker image tag to deploy'
         required: true
         type: string
       run_uuid:
-        description: 'Optional UUID for tracing'
         required: false
         type: string
 
