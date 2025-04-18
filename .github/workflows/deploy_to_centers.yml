@@ -1,4 +1,3 @@
-# .github/workflows/deploy_to_centers.yml
 name: Query Runners and Deploy
 
 on:
@@ -11,97 +10,92 @@ on:
         required: false
         type: string
 
-env:
-  AWS_REGION: us-east-1
-
 jobs:
   check-runners:
     runs-on: ubuntu-latest
     permissions:
-      contents: read        # to read centers.json & template
-      actions: none         # we use our PAT for the Actions API call
+      contents: read      # to read centers.json
+      actions: none       # we call the Actions API with our PAT
     outputs:
-      valid_labels:   ${{ steps.filter.outputs.valid_labels }}
-      offline_labels: ${{ steps.filter.outputs.offline_labels }}
-      missing_labels: ${{ steps.filter.outputs.missing_labels }}
+      valid_centers:   ${{ steps.filter.outputs.valid_centers }}
+      missing_centers: ${{ steps.filter.outputs.missing_centers }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fetch repo-level runners
+      - name: Load Centers Mapping
+        id: load
+        run: |
+          # centers.json is e.g. { "css_center":"css-label-1", "demo_center":"no-such-label" }
+          CENTER_IDS=$(jq -c 'keys' .github/data/centers.json)
+          echo "CENTER_IDS=$CENTER_IDS" >> $GITHUB_ENV
+
+      - name: Fetch Repo‑Level Runners
         id: fetch
         run: |
-          curl -s -H "Accept: application/vnd.github+json" \
-                   -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
-                   -H "X-GitHub-Api-Version: 2022-11-28" \
-                   https://api.github.com/repos/devopgitcs/test_centers/actions/runners \
+          curl -s -L \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/devopgitcs/test_centers/actions/runners \
             > runners.json
 
-      - name: Filter by runner-labels
+      - name: Filter Available vs Missing Centers
         id: filter
         run: |
-          mapping=$(jq -c '.' .github/data/centers.json)
-          offline=$(jq -r '.runners[] | select(.status=="offline") | .name' runners.json)
+          VALID=()
+          MISSING=()
 
-          valid=(); off=(); missing=()
-          for label in $(echo "$mapping" | jq -r '.[]'); do
-            runner=$(jq -r --arg L "$label" \
-              '.runners[] | select(.labels[].name == $L) | .name' \
-              runners.json)
-
-            if [ -z "$runner" ]; then
-              missing+=("$label")
-            elif echo "$offline" | grep -qx "$runner"; then
-              off+=("$label")
+          for center in $(echo "${{ env.CENTER_IDS }}" | jq -r '.[]'); do
+            label=$(jq -r --arg C "$center" '.[$C]' .github/data/centers.json)
+            if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L)' runners.json > /dev/null; then
+              VALID+=("$center")
             else
-              valid+=("$label")
+              MISSING+=("$center")
             fi
           done
 
+          # Helper: turn Bash arrays into JSON
           to_json() {
             if [ $# -eq 0 ]; then
               echo '[]'
             else
-              printf '%s\n' "$@" | jq -R . | jq -s -c .
+              printf '%s\n' "$@" | jq -R . | jq -s .
             fi
           }
 
-          echo "valid_labels=$(to_json "${valid[@]}")" >> $GITHUB_OUTPUT
-          echo "offline_labels=$(to_json "${off[@]}")"   >> $GITHUB_OUTPUT
-          echo "missing_labels=$(to_json "${missing[@]}")" >> $GITHUB_OUTPUT
+          echo "valid_centers=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
+          echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
 
-      - name: Warn & fail if no usable runners
+      - name: Warn About Missing Centers
+        if: ${{ steps.filter.outputs.missing_centers != '[]' }}
         run: |
-          echo "⚠️ Offline labels: ${{ steps.filter.outputs.offline_labels }}"
-          echo "⚠️ Missing labels: ${{ steps.filter.outputs.missing_labels }}"
-          if [ "$(echo '${{ steps.filter.outputs.valid_labels }}' | jq length)" -eq 0 ]; then
-            echo "❌ No valid runners—exiting."
-            exit 1
-          fi
+          echo "⚠️  Skipping centers with no matching runner-label:"
+          echo "${{ steps.filter.outputs.missing_centers }}"
+
+      - name: Fail If None Available
+        if: ${{ steps.filter.outputs.valid_centers == '[]' }}
+        run: |
+          echo "❌  No valid centers found—exiting."
+          exit 1
 
   deploy:
     needs: check-runners
     strategy:
       matrix:
-        label: ${{ fromJson(needs.check-runners.outputs.valid_labels) }}
-    # <-- BLOCK STYLE runs-on:
-    runs-on:
-      - self-hosted
-      - ${{ matrix.label }}
+        center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
+    runs-on: ${{ matrix.center }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Render docker‑compose.yml
-        run: |
-          sed -e "s|\${IMAGE_TAG}|${{ inputs.tag_name }}|" \
-              -e "s|\${REPLACE_CENTER_ID}|${{ matrix.label }}|" \
-              docker-compose.yml.template > docker-compose.yml
-          cat docker-compose.yml
-
-      - name: Run Docker Compose
-        run: |
-          docker-compose up --build -d
-          docker-compose ps
+      - name: Dispatch Docker Compose Deploy
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          workflow: docker_compose_deploy.yml
+          token: ${{ secrets.ACTIONS_PAT }}
+          inputs: |
+            {
+              "tag_name": "${{ inputs.tag_name }}",
+              "run_uuid": "${{ inputs.run_uuid }}",
+              "center_id": "${{ matrix.center }}"
+            }
