@@ -1,4 +1,3 @@
-# .github/workflows/deploy_to_centers.yml
 name: Query Runners and Deploy
 
 on:
@@ -9,116 +8,110 @@ on:
         required: true
         type: string
       run_uuid:
-        description: Optional run UUID for tracking
+        description: Optional run UUID
         required: false
         type: string
 
+# We only need read access to code; we'll call the API with our PAT
 permissions:
-  contents: read    # to read centers.json
-  actions: none     # we call the runners API with our PAT
+  contents: read
+  actions: none
 
 jobs:
   check-runners:
     runs-on: ubuntu-latest
     outputs:
-      valid_labels:    ${{ steps.filter.outputs.valid_labels }}
+      valid_centers:   ${{ steps.filter.outputs.valid_centers }}
       missing_centers: ${{ steps.filter.outputs.missing_centers }}
 
     steps:
-      - name: Check out repository
+      - name: Check out code
         uses: actions/checkout@v4
 
       - name: Show centers.json
         run: |
-          echo "=== Centers mapping (.github/data/centers.json) ==="
+          echo "=== centers.json ==="
           cat .github/data/centers.json
           echo
 
-      - name: Fetch all org-level self-hosted runners
+      - name: Fetch self‑hosted runners
         id: fetch
         run: |
-          echo "Calling GitHub API to list org runners..."
+          echo "Calling GitHub API for repo‑level runners…"
           curl -sSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
-            https://api.github.com/orgs/devopgitcs/actions/runners \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/devopgitcs/test_centers/actions/runners \
           > runners.json
-
-          total=$(jq -r '.total_count' runners.json)
-          echo "Total runners returned: $total"
-          echo "First few runners (name + labels):"
-          jq -r '.runners[] | .name + " → [" + ( .labels[].name // "" ) + "]"' runners.json | head -n 10
+          echo "=== runners.json ==="
+          cat runners.json
           echo
 
-      - name: Filter centers ↔ runner labels
+      - name: Filter valid vs missing centers
         id: filter
         run: |
-          # prepare
           VALID=()
           MISSING=()
 
-          # iterate each center_id
+          # iterate each center_id (the keys in centers.json)
           for center in $(jq -r 'keys_unsorted[]' .github/data/centers.json); do
             label=$(jq -r --arg c "$center" '.[$c]' .github/data/centers.json)
-            echo "Checking center '$center' for runner-label '$label'..."
+            echo "Center: $center  →  looking for runner-label: $label"
 
+            # check if any runner has that label
             if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L)' runners.json > /dev/null; then
-              echo "  → Found runner using label '$label'"
-              VALID+=("$label")
+              echo "  ✔ runner-label '$label' exists"
+              VALID+=("$center")
             else
-              echo "  → No runner with label '$label'"
+              echo "  ✘ runner-label '$label' not found"
               MISSING+=("$center")
             fi
           done
 
-          # print summary
           echo
-          echo "Summary:"
-          echo "  Valid runner labels: ${VALID[*]:-<none>}"
-          echo "  Missing centers:     ${MISSING[*]:-<none>}"
+          echo "Valid centers:   ${VALID[*]:-<none>}"
+          echo "Missing centers: ${MISSING[*]:-<none>}"
           echo
 
-          # helper to JSON‑ify a bash array
+          # helper to turn a bash-array into a JSON array
           to_json() {
-            printf '%s\n' "$@" | jq -R . | jq -s -c .
+            [ $# -eq 0 ] && { echo '[]'; return; }
+            printf '%s\n' "$@" | jq -R . | jq -s .
           }
 
-          # write outputs
-          echo "valid_labels=$(to_json "${VALID[@]}")"    >> $GITHUB_OUTPUT
+          echo "valid_centers=$(to_json "${VALID[@]}")"    >> $GITHUB_OUTPUT
           echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
 
-      - name: Warn about missing centers
+      - name: Warn about missing
         if: ${{ steps.filter.outputs.missing_centers != '[]' }}
         run: |
-          echo "WARNING: skipping these centers (no runner found):"
-          echo "  ${{ steps.filter.outputs.missing_centers }}"
+          echo "WARNING: skipping centers: ${{ steps.filter.outputs.missing_centers }}"
 
-      - name: Fail if no runners available
-        if: ${{ steps.filter.outputs.valid_labels == '[]' }}
+      - name: Fail if no centers left
+        if: ${{ steps.filter.outputs.valid_centers == '[]' }}
         run: |
-          echo "ERROR: no valid self-hosted runners found; exiting."
+          echo "ERROR: no valid centers found – exiting."
           exit 1
 
-  deploy:
+  dispatch-deploy:
+    name: Dispatch Docker Compose Deploy
     needs: check-runners
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        label: ${{ fromJson(needs.check-runners.outputs.valid_labels) }}
-    runs-on:
-      - self-hosted
-      - ${{ matrix.label }}
+        center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Deploy with Docker Compose
-        run: |
-          echo "=== Deployment ==="
-          echo "Runner label: ${{ matrix.label }}"
-          echo "Image tag:    ${{ inputs.tag_name }}"
-          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:     ${{ inputs.run_uuid }}"
-          echo
-          docker-compose pull
-          docker-compose up -d --build
-          docker-compose ps
+      - name: Dispatch per‑center deploy
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          token: ${{ secrets.ACTIONS_PAT }}
+          workflow: docker_compose_deploy.yml
+          ref: main
+          inputs: |
+            {
+              "tag_name": "${{ inputs.tag_name }}",
+              "run_uuid": "${{ inputs.run_uuid }}",
+              "center_id": "${{ matrix.center }}"
+            }
