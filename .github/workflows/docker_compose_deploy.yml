@@ -13,23 +13,26 @@ on:
         required: false
         type: string
       center_id:
-        description: Self‑hosted runner label (center) to use
+        description: Self-hosted runner label (center) to use
         required: true
         type: string
+
+permissions:
+  contents: read    # checkout code
 
 jobs:
   deploy:
     runs-on: [ self-hosted, ${{ inputs.center_id }} ]
 
     steps:
-      - name: Check out code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Log deployment info
         run: |
           echo "Deploying center: ${{ inputs.center_id }}"
           echo "Image tag:        ${{ inputs.tag_name }}"
-          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:         ${{ inputs.run_uuid }}"
+          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:      ${{ inputs.run_uuid }}"
 
       - name: Run Docker Compose
         run: |
