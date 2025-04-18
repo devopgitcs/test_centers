@@ -1,4 +1,4 @@
-# .github/workflows/dispatch_to_centers.yml
+# .github/workflows/deploy_to_centers.yml
 name: Query Runners and Dispatch Deploys
 
 on:
@@ -14,8 +14,8 @@ on:
         type: string
 
 permissions:
-  contents: read   # only reading code+centers.json
-  actions: none    # REST API calls use our PAT
+  contents: read    # to read .github/data/centers.json
+  actions: none     # we'll call the REST API with our PAT
 
 jobs:
   check-runners:
@@ -28,59 +28,73 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      - name: Show centers.json
+        run: |
+          echo "=== .github/data/centers.json ==="
+          cat .github/data/centers.json
+          echo
+
       - name: Fetch org‑level self‑hosted runners
         id: fetch
         run: |
+          echo "Fetching runners via REST API…"
           curl -sSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/orgs/devopgitcs/actions/runners \
-            > runners.json
+          > runners.json
+          echo "=== runners.json ==="
+          cat runners.json
+          echo
 
-      - name: Filter valid vs missing centers
+      - name: Filter valid vs. missing centers
         id: filter
         run: |
           VALID=()
           MISSING=()
 
-          # for each center key in centers.json…
           for center in $(jq -r 'keys_unsorted[]' .github/data/centers.json); do
             label=$(jq -r --arg c "$center" '.[$c]' .github/data/centers.json)
-
-            if jq -e --arg L "$label" \
-                   '.runners[] | select(.labels[].name == $L and .status=="online")' \
-                   runners.json >/dev/null; then
+            echo "Center: $center → runner label: $label"
+            if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L and .status=="online")' runners.json >/dev/null; then
+              echo "  ✔ found"
               VALID+=("$center")
             else
+              echo "  ✘ not found"
               MISSING+=("$center")
             fi
           done
 
-          printf "Valid centers:   %s\n" "${VALID[*]:-<none>}"
-          printf "Missing centers: %s\n" "${MISSING[*]:-<none>}"
+          echo
+          echo "VALID centers  : ${VALID[*]:-<none>}"
+          echo "MISSING centers: ${MISSING[*]:-<none>}"
+          echo
 
-          # helper: bash array → single-line JSON
           to_json() {
-            [ $# -eq 0 ] && echo '[]' && return
+            [ $# -eq 0 ] && { echo '[]'; return; }
             printf '%s\n' "$@" | jq -R . | jq -s -c .
           }
 
-          echo "valid_centers=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
-          echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
+          valid_json=$(to_json "${VALID[@]}")
+          missing_json=$(to_json "${MISSING[@]}")
 
-      - name: Warn about missing
+          echo "valid_centers=$valid_json"   >> $GITHUB_OUTPUT
+          echo "missing_centers=$missing_json" >> $GITHUB_OUTPUT
+
+      - name: Warn about missing centers
         if: ${{ steps.filter.outputs.missing_centers != '[]' }}
         run: |
           echo "WARNING: skipping centers: ${{ steps.filter.outputs.missing_centers }}"
 
-      - name: Fail if none valid
+      - name: Fail if no centers available
         if: ${{ steps.filter.outputs.valid_centers == '[]' }}
         run: |
-          echo "ERROR: no valid centers remain – exiting."
+          echo "ERROR: no valid centers remain—exiting."
           exit 1
 
   dispatch-deploy:
+    name: Dispatch per‑center Docker‑Compose Deploy
     needs: check-runners
     runs-on: ubuntu-latest
     strategy:
@@ -88,7 +102,7 @@ jobs:
         center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
 
     steps:
-      - name: Trigger per‑center deploy
+      - name: Trigger Docker Compose Deploy
         uses: benc-uk/workflow-dispatch@v1
         with:
           token: ${{ secrets.ACTIONS_PAT }}
