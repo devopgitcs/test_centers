@@ -1,4 +1,4 @@
 {
-  "css_center": "css-label1"
+  "css_center": "css-label1",         // your real label (will be missing)
+  "fake_center": "no-such-label"      // definitely missing
 }
-
