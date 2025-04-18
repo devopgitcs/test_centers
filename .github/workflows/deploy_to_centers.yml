@@ -1,3 +1,4 @@
+# .github/workflows/deploy_to_centers.yml
 name: Query Runners and Deploy
 
 on:
@@ -22,20 +23,24 @@ jobs:
       no_label_centers: ${{ steps.filter-runners.outputs.no_label_centers }}
 
     steps:
-      # 1. Fetch runners using PAT
-      - name: Fetch runners (raw debug)
+      # 0. Checkout so we can read centers.json
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 1. Fetch org-level runners
+      - name: Fetch runners from org
         id: fetch-raw
         run: |
           curl -s -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
-            https://api.github.com/repos/devopgitcs/test_centers/actions/runners \
+            https://api.github.com/orgs/devopgitcs/actions/runners \
             > runners.raw.json
 
           echo "=== RAW RESPONSE ==="
           cat runners.raw.json
           echo "=== end RAW ==="
 
-      # 2. Parse runners into array
+      # 2. Parse runners
       - name: Parse runners JSON
         id: fetch-runners
         run: |
@@ -43,14 +48,14 @@ jobs:
           echo "Parsed $(wc -l < runners.json) runners"
           echo "runners=$(cat runners.json)" >> $GITHUB_ENV
 
-      # 3. Load centers.json
+      # 3. Load centers mapping
       - name: Load centers mapping
         id: load-centers
         run: |
           CENTER_MAPPING=$(jq -c '.' .github/data/centers.json)
           echo "CENTER_MAPPING=$CENTER_MAPPING" >> $GITHUB_ENV
 
-      # 4. Filter valid/offline/no‑label
+      # 4. Filter valid/offline/no‑label centers
       - name: Filter centers
         id: filter-runners
         run: |
@@ -76,11 +81,11 @@ jobs:
           echo "::set-output name=offline_centers::$(to_json "${OFF[@]}")"
           echo "::set-output name=no_label_centers::$(to_json "${NO_LABEL[@]}")"
 
-      # 5. Warn and fail if none left
+      # 5. Warn and fail if none valid
       - name: Warn or fail
         run: |
-          echo "⚠️ Offline: ${{ steps.filter-runners.outputs.offline_centers }}"
-          echo "⚠️ No label: ${{ steps.filter-runners.outputs.no_label_centers }}"
+          echo "⚠️ Offline centers: ${{ steps.filter-runners.outputs.offline_centers }}"
+          echo "⚠️ No‑label centers: ${{ steps.filter-runners.outputs.no_label_centers }}"
           if [ "$(echo '${{ steps.filter-runners.outputs.valid_centers }}' | jq length)" -eq 0 ]; then
             echo "❌ No valid centers – exiting."
             exit 1
@@ -94,7 +99,7 @@ jobs:
     runs-on: ${{ matrix.center }}
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Render docker-compose.yml
@@ -102,6 +107,7 @@ jobs:
           sed -e "s|\${IMAGE_TAG}|${{ inputs.tag_name }}|" \
               -e "s|\${REPLACE_CENTER_ID}|${{ matrix.center }}|" \
               docker-compose.yml.template > docker-compose.yml
+          echo "Generated docker-compose.yml:"
           cat docker-compose.yml
 
       - name: Run Docker Compose
