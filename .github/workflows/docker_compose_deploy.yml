@@ -1,6 +1,5 @@
 name: Docker Compose Deploy
 
-# this can be triggered by the dispatch above, or manually
 on:
   workflow_dispatch:
     inputs:
@@ -24,9 +23,9 @@ jobs:
 
       - name: Log deployment info
         run: |
-          echo "🚀 Deploying center: ${{ inputs.center_id }}"
-          echo "📦 Image tag:     ${{ inputs.tag_name }}"
-          [ -n "${{ inputs.run_uuid }}" ] && echo "🆔 Run UUID:      ${{ inputs.run_uuid }}"
+          echo " Deploying center: ${{ inputs.center_id }}"
+          echo "Image tag:     ${{ inputs.tag_name }}"
+          [ -n "${{ inputs.run_uuid }}" ] && echo " Run UUID:      ${{ inputs.run_uuid }}"
 
       - name: Run Docker Compose
         run: |
