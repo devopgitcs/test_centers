@@ -4,34 +4,32 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
+        description: 'Docker image tag to deploy'
         required: true
         type: string
       run_uuid:
+        description: 'Optional run UUID'
         required: false
         type: string
+
+env:
+  AWS_REGION: us-east-1
 
 jobs:
   check-runners:
     runs-on: ubuntu-latest
     permissions:
-      contents: read      # to read centers.json
-      actions: none       # we call the Actions API with our PAT
+      contents: read       # to read centers.json
+      actions: none        # we'll use our PAT for the REST call
     outputs:
       valid_centers:   ${{ steps.filter.outputs.valid_centers }}
       missing_centers: ${{ steps.filter.outputs.missing_centers }}
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Load Centers Mapping
-        id: load
-        run: |
-          # centers.json is e.g. { "css_center":"css-label-1", "demo_center":"no-such-label" }
-          CENTER_IDS=$(jq -c 'keys' .github/data/centers.json)
-          echo "CENTER_IDS=$CENTER_IDS" >> $GITHUB_ENV
-
-      - name: Fetch Repo‑Level Runners
+      - name: Fetch repo‑level runners
         id: fetch
         run: |
           curl -s -L \
@@ -44,11 +42,17 @@ jobs:
       - name: Filter Available vs Missing Centers
         id: filter
         run: |
+          # 1) turn your centers.json keys into a space-separated list
+          CENTER_IDS=$(jq -r 'keys_unsorted | join(" ")' .github/data/centers.json)
+
           VALID=()
           MISSING=()
 
-          for center in $(echo "${{ env.CENTER_IDS }}" | jq -r '.[]'); do
+          for center in $CENTER_IDS; do
+            # lookup the runner-label for this center
             label=$(jq -r --arg C "$center" '.[$C]' .github/data/centers.json)
+
+            # does any runner have exactly that label?
             if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L)' runners.json > /dev/null; then
               VALID+=("$center")
             else
@@ -56,7 +60,7 @@ jobs:
             fi
           done
 
-          # Helper: turn Bash arrays into JSON
+          # helper: bash-array → compact JSON array
           to_json() {
             if [ $# -eq 0 ]; then
               echo '[]'
@@ -65,19 +69,20 @@ jobs:
             fi
           }
 
+          # write outputs
           echo "valid_centers=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
           echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
 
       - name: Warn About Missing Centers
         if: ${{ steps.filter.outputs.missing_centers != '[]' }}
         run: |
-          echo "⚠️  Skipping centers with no matching runner-label:"
+          echo "⚠️  Skipping centers with no runner available:"
           echo "${{ steps.filter.outputs.missing_centers }}"
 
-      - name: Fail If None Available
+      - name: Fail If No Valid Centers
         if: ${{ steps.filter.outputs.valid_centers == '[]' }}
         run: |
-          echo "❌  No valid centers found—exiting."
+          echo "❌  No valid centers found – exiting."
           exit 1
 
   deploy:
