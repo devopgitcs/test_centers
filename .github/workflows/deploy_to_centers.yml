@@ -18,23 +18,24 @@ jobs:
   check-runners:
     runs-on: ubuntu-latest
     permissions:
-      contents: read         # to read centers.json
-      actions: none          # we’re using a PAT instead
+      contents: read
+      actions: none     # we're using a PAT
     outputs:
       valid_centers: ${{ steps.filter-runners.outputs.valid_centers }}
       offline_centers: ${{ steps.filter-runners.outputs.offline_centers }}
       no_label_centers: ${{ steps.filter-runners.outputs.no_label_centers }}
 
     steps:
-      # 1) Checkout the repo so we can read .github/data/centers.json
+      # 1) Checkout so we have centers.json & template
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2) Fetch org‑level runners via your PAT
+      # 2) Fetch org‑level runners
       - name: Fetch runners (raw)
         id: fetch-raw
         run: |
-          curl -s -H "Accept: application/vnd.github+json" \
+          curl -s \
+            -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
             https://api.github.com/orgs/devopgitcs/actions/runners \
             > runners.raw.json
@@ -42,47 +43,41 @@ jobs:
           cat runners.raw.json
           echo "=== end RAW ==="
 
-      # 3) Parse that into an array file
-      - name: Parse runners JSON
-        id: fetch-runners
-        run: |
-          jq -c '.runners[]' runners.raw.json > runners.json
-          echo "Parsed $(wc -l < runners.json) runners"
-
-      # 4) Filter into valid / offline / no‑label
+      # 3) Filter centers in a single step against runners.raw.json
       - name: Filter centers
         id: filter-runners
         run: |
-          # read mapping into a shell variable
+          # load mapping
           mapping=$(jq -c '.' .github/data/centers.json)
 
-          # collect runner names that are offline
-          offline_names=$(jq -r 'select(.status=="offline")|.name' runners.json)
+          # collect offline runner names
+          offline=$(jq -r '.runners[] | select(.status=="offline") | .name' runners.raw.json)
 
           valid=(); off=(); no_label=()
 
           for center in $(echo "$mapping" | jq -r 'keys[]'); do
             label=$(echo "$mapping" | jq -r --arg c "$center" '.[$c]')
-            # find any runner with that label
-            match=$(jq -r --arg L "$label" '.[]|select(.labels|index($L))|.name' runners.json)
+
+            # find runners matching that label
+            match=$(jq -r --arg L "$label" '.runners[] | select(.labels[].name==$L) | .name' runners.raw.json)
 
             if [ -z "$match" ]; then
               no_label+=("$center")
-            elif echo "$offline_names" | grep -qx "$match"; then
+            elif echo "$offline" | grep -qx "$match"; then
               off+=("$center")
             else
               valid+=("$center")
             fi
           done
 
-          # helper to turn a bash array into JSON
+          # helper to emit JSON array
           to_json(){ printf '%s\n' "$@" | jq -R . | jq -s .; }
 
           echo "::set-output name=valid_centers::$(to_json "${valid[@]}")"
           echo "::set-output name=offline_centers::$(to_json "${off[@]}")"
           echo "::set-output name=no_label_centers::$(to_json "${no_label[@]}")"
 
-      # 5) Warn and fail if no valid centers
+      # 4) Warn/fail
       - name: Warn or fail
         run: |
           echo "⚠️ Offline centers: ${{ steps.filter-runners.outputs.offline_centers }}"
@@ -98,7 +93,6 @@ jobs:
       matrix:
         center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
     runs-on: ${{ matrix.center }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
