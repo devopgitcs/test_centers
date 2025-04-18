@@ -1,10 +1,4 @@
-# .github/workflows/deploy_to_centers.yml
 name: Query Runners and Deploy
-
-# Give this workflow permission to list runners and read repo files
-permissions:
-  actions: read
-  contents: read
 
 on:
   workflow_dispatch:
@@ -28,67 +22,67 @@ jobs:
       no_label_centers: ${{ steps.filter-runners.outputs.no_label_centers }}
 
     steps:
-      # 1. Fetch runners and dump raw output for debugging
-      - name: Fetch Runners (raw debug)
+      # 1. Fetch runners using PAT
+      - name: Fetch runners (raw debug)
         id: fetch-raw
         run: |
           curl -s -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
             https://api.github.com/repos/devopgitcs/test_centers/actions/runners \
             > runners.raw.json
+
           echo "=== RAW RESPONSE ==="
           cat runners.raw.json
           echo "=== end RAW ==="
 
-      # 2. Parse runners into an array
-      - name: Parse Runners JSON
+      # 2. Parse runners into array
+      - name: Parse runners JSON
         id: fetch-runners
         run: |
           jq -c '.runners[]' runners.raw.json > runners.json
           echo "Parsed $(wc -l < runners.json) runners"
           echo "runners=$(cat runners.json)" >> $GITHUB_ENV
 
-      # 3. Load centers.json mapping
-      - name: Load Centers Mapping
+      # 3. Load centers.json
+      - name: Load centers mapping
         id: load-centers
         run: |
           CENTER_MAPPING=$(jq -c '.' .github/data/centers.json)
           echo "CENTER_MAPPING=$CENTER_MAPPING" >> $GITHUB_ENV
 
-      # 4. Filter valid/offline/no‑label centers
-      - name: Filter Centers
+      # 4. Filter valid/offline/no‑label
+      - name: Filter centers
         id: filter-runners
         run: |
-          OFFLINE_NAMES=$(jq -r 'select(.status=="offline")|.name' runners.json)
-
+          OFFLINE=$(jq -r 'select(.status=="offline") | .name' runners.json)
           VALID=(); OFF=(); NO_LABEL=()
+
           for CENT in $(echo "${{ env.CENTER_MAPPING }}" | jq -r 'keys[]'); do
             LABEL=$(echo "${{ env.CENTER_MAPPING }}" | jq -r ".[\"$CENT\"]")
-            MATCH=$(jq -r --arg L "$LABEL" '.[]|select(.labels|index($L))|.name' runners.json)
+            MATCH=$(jq -r --arg L "$LABEL" '.[] | select(.labels | index($L)) | .name' runners.json)
 
             if [ -z "$MATCH" ]; then
               NO_LABEL+=("$CENT")
-            elif echo "$OFFLINE_NAMES" | grep -qx "$MATCH"; then
+            elif echo "$OFFLINE" | grep -qx "$MATCH"; then
               OFF+=("$CENT")
             else
               VALID+=("$CENT")
             fi
           done
 
-          # Export as JSON arrays
           to_json() { printf '%s\n' "$@" | jq -R . | jq -s .; }
 
           echo "::set-output name=valid_centers::$(to_json "${VALID[@]}")"
           echo "::set-output name=offline_centers::$(to_json "${OFF[@]}")"
           echo "::set-output name=no_label_centers::$(to_json "${NO_LABEL[@]}")"
 
-      # 5. Warn and/or fail if nothing to do
-      - name: Warn or Fail
+      # 5. Warn and fail if none left
+      - name: Warn or fail
         run: |
-          echo "⚠️ Offline centers: ${{ steps.filter-runners.outputs.offline_centers }}"
-          echo "⚠️ No‑label centers: ${{ steps.filter-runners.outputs.no_label_centers }}"
+          echo "⚠️ Offline: ${{ steps.filter-runners.outputs.offline_centers }}"
+          echo "⚠️ No label: ${{ steps.filter-runners.outputs.no_label_centers }}"
           if [ "$(echo '${{ steps.filter-runners.outputs.valid_centers }}' | jq length)" -eq 0 ]; then
-            echo "❌ No valid centers found – exiting."
+            echo "❌ No valid centers – exiting."
             exit 1
           fi
 
@@ -100,7 +94,7 @@ jobs:
     runs-on: ${{ matrix.center }}
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Render docker-compose.yml
@@ -108,7 +102,6 @@ jobs:
           sed -e "s|\${IMAGE_TAG}|${{ inputs.tag_name }}|" \
               -e "s|\${REPLACE_CENTER_ID}|${{ matrix.center }}|" \
               docker-compose.yml.template > docker-compose.yml
-          echo "Generated docker-compose.yml:"
           cat docker-compose.yml
 
       - name: Run Docker Compose
