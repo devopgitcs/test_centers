@@ -1,19 +1,18 @@
-# .github/workflows/docker_compose_deploy.yml
 name: Docker Compose Deploy
 
 on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Docker image tag to deploy'
+        description: Docker image tag to deploy
         required: true
         type: string
       run_uuid:
-        description: 'Optional run UUID for tracking'
+        description: Optional run UUID for tracking
         required: false
         type: string
       center_id:
-        description: 'Self‑hosted runner label (center) to use'
+        description: Self‑hosted runner label (center) to use
         required: true
         type: string
 
@@ -33,7 +32,7 @@ jobs:
       - name: Log deployment info
         run: |
           echo "Deploying center: ${{ inputs.center_id }}"
-          echo "Image tag:        ${{ inputs.tag_name }}"
+          echo "Using image tag:   ${{ inputs.tag_name }}"
           if [ -n "${{ inputs.run_uuid }}" ]; then
             echo "Run UUID:         ${{ inputs.run_uuid }}"
           fi
