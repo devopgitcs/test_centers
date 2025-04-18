@@ -1,4 +1,3 @@
-# .github/workflows/docker_compose_deploy.yml
 name: Docker Compose Deploy
 
 on:
@@ -9,7 +8,7 @@ on:
         required: true
         type: string
       run_uuid:
-        description: Optional run UUID
+        description: Optional run UUID for tracking
         required: false
         type: string
       center_id:
@@ -18,7 +17,7 @@ on:
         type: string
 
 permissions:
-  contents: read    # to checkout code
+  contents: read   # to checkout code
 
 jobs:
   deploy:
@@ -28,11 +27,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Log info
+      - name: Log deployment info
         run: |
           echo "Deploying center: ${{ inputs.center_id }}"
           echo "Image tag:        ${{ inputs.tag_name }}"
-          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:    ${{ inputs.run_uuid }}"
+          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:      ${{ inputs.run_uuid }}"
 
       - name: Run Docker Compose
         run: |
@@ -41,5 +40,5 @@ jobs:
           docker-compose pull
           docker-compose up -d --build
 
-      - name: Verify
+      - name: Verify services
         run: docker-compose ps
