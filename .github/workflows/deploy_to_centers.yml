@@ -1,3 +1,4 @@
+# .github/workflows/deploy_to_centers.yml
 name: Deploy to Centers
 
 on:
@@ -27,34 +28,52 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Show centers.json
+        run: |
+          echo "=== .github/data/centers.json ==="
+          cat .github/data/centers.json
+          echo
+
       - name: Fetch org‑level self‑hosted runners
         id: fetch
         run: |
+          echo "Fetching self‑hosted runners from org via REST API…"
           curl -sSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
             https://api.github.com/orgs/devopgitcs/actions/runners \
           > runners.json
+          echo "=== runners.json ==="
+          cat runners.json
+          echo
 
-      - name: Filter valid vs missing centers
+      - name: Filter valid vs missing centers (with debug)
         id: filter
         run: |
           VALID=()
           MISSING=()
 
-          # .github/data/centers.json is { "css_center":"css-label-1", ... }
+          echo "Starting filter loop…"
           for center in $(jq -r 'keys_unsorted[]' .github/data/centers.json); do
             label=$(jq -r --arg c "$center" '.[$c]' .github/data/centers.json)
+            echo "- Center: '$center' → looking for runner‑label: '$label'"
+
             if jq -e --arg L "$label" \
                     '.runners[] | select(.status=="online" and .labels[].name==$L)' \
                     runners.json >/dev/null; then
+              echo "    ✓ Found an online runner with label '$label'"
               VALID+=("$center")
             else
+              echo "    ✗ No online runner for label '$label'"
               MISSING+=("$center")
             fi
           done
 
-          # helper to turn a bash-array into a compact JSON array
+          echo
+          echo "Collected VALID centers:   ${VALID[*]:-<none>}"
+          echo "Collected MISSING centers: ${MISSING[*]:-<none>}"
+          echo
+
           to_json() {
             [ $# -eq 0 ] && { echo '[]'; return; }
             printf '%s\n' "$@" | jq -R . | jq -s -c .
@@ -63,13 +82,13 @@ jobs:
           valid_json=$(to_json "${VALID[@]}")
           missing_json=$(to_json "${MISSING[@]}")
 
-          echo "valid_centers=$valid_json"   >> $GITHUB_OUTPUT
+          echo "valid_centers=$valid_json"    >> $GITHUB_OUTPUT
           echo "missing_centers=$missing_json" >> $GITHUB_OUTPUT
 
-      - name: Show filtering results
+      - name: Show filtering results in outputs
         run: |
-          echo "Valid centers:   ${{ steps.filter.outputs.valid_centers }}"
-          echo "Missing centers: ${{ steps.filter.outputs.missing_centers }}"
+          echo "→ Step‑outputs.valid_centers:   ${{ steps.filter.outputs.valid_centers }}"
+          echo "→ Step‑outputs.missing_centers: ${{ steps.filter.outputs.missing_centers }}"
 
       - name: Warn about missing centers
         if: ${{ steps.filter.outputs.missing_centers != '[]' }}
@@ -90,7 +109,7 @@ jobs:
         center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
 
     steps:
-      - name: Trigger per‑center Docker‑Compose Deploy
+      - name: Dispatch per‑center Docker‑Compose Deploy
         uses: benc-uk/workflow-dispatch@v1
         with:
           token: ${{ secrets.ACTIONS_PAT }}
