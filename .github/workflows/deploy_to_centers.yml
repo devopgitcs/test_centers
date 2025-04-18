@@ -17,71 +17,72 @@ env:
 jobs:
   check-runners:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read         # to read centers.json
+      actions: none          # we’re using a PAT instead
     outputs:
       valid_centers: ${{ steps.filter-runners.outputs.valid_centers }}
       offline_centers: ${{ steps.filter-runners.outputs.offline_centers }}
       no_label_centers: ${{ steps.filter-runners.outputs.no_label_centers }}
 
     steps:
-      # 0. Checkout so we can read centers.json
+      # 1) Checkout the repo so we can read .github/data/centers.json
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. Fetch org-level runners
-      - name: Fetch runners from org
+      # 2) Fetch org‑level runners via your PAT
+      - name: Fetch runners (raw)
         id: fetch-raw
         run: |
           curl -s -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
             https://api.github.com/orgs/devopgitcs/actions/runners \
             > runners.raw.json
-
           echo "=== RAW RESPONSE ==="
           cat runners.raw.json
           echo "=== end RAW ==="
 
-      # 2. Parse runners
+      # 3) Parse that into an array file
       - name: Parse runners JSON
         id: fetch-runners
         run: |
           jq -c '.runners[]' runners.raw.json > runners.json
           echo "Parsed $(wc -l < runners.json) runners"
-          echo "runners=$(cat runners.json)" >> $GITHUB_ENV
 
-      # 3. Load centers mapping
-      - name: Load centers mapping
-        id: load-centers
-        run: |
-          CENTER_MAPPING=$(jq -c '.' .github/data/centers.json)
-          echo "CENTER_MAPPING=$CENTER_MAPPING" >> $GITHUB_ENV
-
-      # 4. Filter valid/offline/no‑label centers
+      # 4) Filter into valid / offline / no‑label
       - name: Filter centers
         id: filter-runners
         run: |
-          OFFLINE=$(jq -r 'select(.status=="offline") | .name' runners.json)
-          VALID=(); OFF=(); NO_LABEL=()
+          # read mapping into a shell variable
+          mapping=$(jq -c '.' .github/data/centers.json)
 
-          for CENT in $(echo "${{ env.CENTER_MAPPING }}" | jq -r 'keys[]'); do
-            LABEL=$(echo "${{ env.CENTER_MAPPING }}" | jq -r ".[\"$CENT\"]")
-            MATCH=$(jq -r --arg L "$LABEL" '.[] | select(.labels | index($L)) | .name' runners.json)
+          # collect runner names that are offline
+          offline_names=$(jq -r 'select(.status=="offline")|.name' runners.json)
 
-            if [ -z "$MATCH" ]; then
-              NO_LABEL+=("$CENT")
-            elif echo "$OFFLINE" | grep -qx "$MATCH"; then
-              OFF+=("$CENT")
+          valid=(); off=(); no_label=()
+
+          for center in $(echo "$mapping" | jq -r 'keys[]'); do
+            label=$(echo "$mapping" | jq -r --arg c "$center" '.[$c]')
+            # find any runner with that label
+            match=$(jq -r --arg L "$label" '.[]|select(.labels|index($L))|.name' runners.json)
+
+            if [ -z "$match" ]; then
+              no_label+=("$center")
+            elif echo "$offline_names" | grep -qx "$match"; then
+              off+=("$center")
             else
-              VALID+=("$CENT")
+              valid+=("$center")
             fi
           done
 
-          to_json() { printf '%s\n' "$@" | jq -R . | jq -s .; }
+          # helper to turn a bash array into JSON
+          to_json(){ printf '%s\n' "$@" | jq -R . | jq -s .; }
 
-          echo "::set-output name=valid_centers::$(to_json "${VALID[@]}")"
-          echo "::set-output name=offline_centers::$(to_json "${OFF[@]}")"
-          echo "::set-output name=no_label_centers::$(to_json "${NO_LABEL[@]}")"
+          echo "::set-output name=valid_centers::$(to_json "${valid[@]}")"
+          echo "::set-output name=offline_centers::$(to_json "${off[@]}")"
+          echo "::set-output name=no_label_centers::$(to_json "${no_label[@]}")"
 
-      # 5. Warn and fail if none valid
+      # 5) Warn and fail if no valid centers
       - name: Warn or fail
         run: |
           echo "⚠️ Offline centers: ${{ steps.filter-runners.outputs.offline_centers }}"
@@ -107,7 +108,6 @@ jobs:
           sed -e "s|\${IMAGE_TAG}|${{ inputs.tag_name }}|" \
               -e "s|\${REPLACE_CENTER_ID}|${{ matrix.center }}|" \
               docker-compose.yml.template > docker-compose.yml
-          echo "Generated docker-compose.yml:"
           cat docker-compose.yml
 
       - name: Run Docker Compose
