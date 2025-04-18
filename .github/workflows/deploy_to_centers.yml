@@ -18,19 +18,19 @@ jobs:
   check-runners:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      actions: none     # we're using a PAT
+      contents: read     # to read centers.json and the template
+      actions: none      # using a PAT instead
     outputs:
       valid_centers: ${{ steps.filter-runners.outputs.valid_centers }}
       offline_centers: ${{ steps.filter-runners.outputs.offline_centers }}
       no_label_centers: ${{ steps.filter-runners.outputs.no_label_centers }}
 
     steps:
-      # 1) Checkout so we have centers.json & template
+      # 1) Checkout your code so we can read mapping & template
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2) Fetch org‑level runners
+      # 2) Fetch org‑level runners using PAT
       - name: Fetch runners (raw)
         id: fetch-raw
         run: |
@@ -43,23 +43,22 @@ jobs:
           cat runners.raw.json
           echo "=== end RAW ==="
 
-      # 3) Filter centers in a single step against runners.raw.json
+      # 3) Filter centers directly against runners.raw.json
       - name: Filter centers
         id: filter-runners
         run: |
-          # load mapping
+          # Load mapping
           mapping=$(jq -c '.' .github/data/centers.json)
 
-          # collect offline runner names
+          # Which runners are offline?
           offline=$(jq -r '.runners[] | select(.status=="offline") | .name' runners.raw.json)
 
           valid=(); off=(); no_label=()
 
           for center in $(echo "$mapping" | jq -r 'keys[]'); do
             label=$(echo "$mapping" | jq -r --arg c "$center" '.[$c]')
-
-            # find runners matching that label
-            match=$(jq -r --arg L "$label" '.runners[] | select(.labels[].name==$L) | .name' runners.raw.json)
+            # Find runner by that label
+            match=$(jq -r --arg L "$label" '.runners[] | select(.labels[].name == $L) | .name' runners.raw.json)
 
             if [ -z "$match" ]; then
               no_label+=("$center")
@@ -70,14 +69,25 @@ jobs:
             fi
           done
 
-          # helper to emit JSON array
-          to_json(){ printf '%s\n' "$@" | jq -R . | jq -s .; }
+          # Convert bash arrays to JSON arrays
+          to_json() {
+            if [ $# -eq 0 ]; then
+              echo '[]'
+            else
+              printf '%s\n' "$@" | jq -R . | jq -s .
+            fi
+          }
 
-          echo "::set-output name=valid_centers::$(to_json "${valid[@]}")"
-          echo "::set-output name=offline_centers::$(to_json "${off[@]}")"
-          echo "::set-output name=no_label_centers::$(to_json "${no_label[@]}")"
+          valid_json=$(to_json "${valid[@]}")
+          off_json=$(to_json "${off[@]}")
+          no_label_json=$(to_json "${no_label[@]}")
 
-      # 4) Warn/fail
+          # Write outputs via the new GITHUB_OUTPUT file
+          echo "valid_centers=$valid_json" >> $GITHUB_OUTPUT
+          echo "offline_centers=$off_json" >> $GITHUB_OUTPUT
+          echo "no_label_centers=$no_label_json" >> $GITHUB_OUTPUT
+
+      # 4) Warn and fail if nothing valid
       - name: Warn or fail
         run: |
           echo "⚠️ Offline centers: ${{ steps.filter-runners.outputs.offline_centers }}"
@@ -93,6 +103,7 @@ jobs:
       matrix:
         center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
     runs-on: ${{ matrix.center }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -102,6 +113,7 @@ jobs:
           sed -e "s|\${IMAGE_TAG}|${{ inputs.tag_name }}|" \
               -e "s|\${REPLACE_CENTER_ID}|${{ matrix.center }}|" \
               docker-compose.yml.template > docker-compose.yml
+          echo ">>> docker-compose.yml:"
           cat docker-compose.yml
 
       - name: Run Docker Compose
