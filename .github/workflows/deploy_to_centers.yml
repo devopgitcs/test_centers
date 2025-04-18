@@ -1,4 +1,4 @@
-# .github/workflows/deploy_to_centers.yml
+# .github/workflows/dispatch_to_centers.yml
 name: Query Runners and Dispatch Deploys
 
 on:
@@ -14,8 +14,8 @@ on:
         type: string
 
 permissions:
-  contents: read   # to read centers.json
-  actions: none    # we'll call the API with our PAT
+  contents: read   # only reading code+centers.json
+  actions: none    # REST API calls use our PAT
 
 jobs:
   check-runners:
@@ -28,25 +28,15 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Show centers.json
-        run: |
-          echo "=== .github/data/centers.json ==="
-          cat .github/data/centers.json
-          echo
-
-      - name: Fetch org‑level runners
+      - name: Fetch org‑level self‑hosted runners
         id: fetch
         run: |
-          echo "Fetching self‑hosted runners from the organization…"
           curl -sSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/orgs/devopgitcs/actions/runners \
-          > runners.json
-          echo "=== runners.json ==="
-          cat runners.json
-          echo
+            > runners.json
 
       - name: Filter valid vs missing centers
         id: filter
@@ -54,54 +44,43 @@ jobs:
           VALID=()
           MISSING=()
 
-          # for each center_id in centers.json…
+          # for each center key in centers.json…
           for center in $(jq -r 'keys_unsorted[]' .github/data/centers.json); do
             label=$(jq -r --arg c "$center" '.[$c]' .github/data/centers.json)
-            echo "Center: $center → looking for runner-label: $label"
 
-            # does any runner carry that label?
             if jq -e --arg L "$label" \
-                    '.runners[] | select(.labels[].name == $L)' \
-                    runners.json >/dev/null; then
-              echo "  ✔ runner found"
+                   '.runners[] | select(.labels[].name == $L and .status=="online")' \
+                   runners.json >/dev/null; then
               VALID+=("$center")
             else
-              echo "  ✘ runner not found"
               MISSING+=("$center")
             fi
           done
 
-          echo
-          echo "VALID centers  : ${VALID[*]:-<none>}"
-          echo "MISSING centers: ${MISSING[*]:-<none>}"
-          echo
+          printf "Valid centers:   %s\n" "${VALID[*]:-<none>}"
+          printf "Missing centers: %s\n" "${MISSING[*]:-<none>}"
 
-          # Helper: bash-array → compact JSON array
+          # helper: bash array → single-line JSON
           to_json() {
-            [ $# -eq 0 ] && { echo '[]'; return; }
+            [ $# -eq 0 ] && echo '[]' && return
             printf '%s\n' "$@" | jq -R . | jq -s -c .
           }
 
-          valid_json=$(to_json "${VALID[@]}")
-          missing_json=$(to_json "${MISSING[@]}")
+          echo "valid_centers=$(to_json "${VALID[@]}")"   >> $GITHUB_OUTPUT
+          echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
 
-          # Emit to GITHUB_OUTPUT (one‑liner each!)
-          echo "valid_centers=$valid_json"   >> $GITHUB_OUTPUT
-          echo "missing_centers=$missing_json" >> $GITHUB_OUTPUT
-
-      - name: Warn about missing centers
+      - name: Warn about missing
         if: ${{ steps.filter.outputs.missing_centers != '[]' }}
         run: |
           echo "WARNING: skipping centers: ${{ steps.filter.outputs.missing_centers }}"
 
-      - name: Fail if no centers available
+      - name: Fail if none valid
         if: ${{ steps.filter.outputs.valid_centers == '[]' }}
         run: |
           echo "ERROR: no valid centers remain – exiting."
           exit 1
 
   dispatch-deploy:
-    name: Dispatch per‑center Deploy
     needs: check-runners
     runs-on: ubuntu-latest
     strategy:
@@ -109,7 +88,7 @@ jobs:
         center: ${{ fromJson(needs.check-runners.outputs.valid_centers) }}
 
     steps:
-      - name: Trigger Docker Compose Deploy workflow
+      - name: Trigger per‑center deploy
         uses: benc-uk/workflow-dispatch@v1
         with:
           token: ${{ secrets.ACTIONS_PAT }}
