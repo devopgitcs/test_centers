@@ -1,0 +1,42 @@
+name: Docker Compose Deploy
+
+# this can be triggered by the dispatch above, or manually
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        required: true
+        type: string
+      run_uuid:
+        required: false
+        type: string
+      center_id:
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    # pick up the self‑hosted runner whose label matches center_id
+    runs-on: [ self-hosted, ${{ inputs.center_id }} ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log deployment info
+        run: |
+          echo "🚀 Deploying center: ${{ inputs.center_id }}"
+          echo "📦 Image tag:     ${{ inputs.tag_name }}"
+          [ -n "${{ inputs.run_uuid }}" ] && echo "🆔 Run UUID:      ${{ inputs.run_uuid }}"
+
+      - name: Run Docker Compose
+        run: |
+          # if your docker-compose.yml picks up variables, you can export them:
+          export IMAGE_TAG=${{ inputs.tag_name }}
+          export CENTER_ID=${{ inputs.center_id }}
+
+          # run directly off your existing docker-compose.yml
+          docker-compose pull
+          docker-compose up -d --build
+
+      - name: Verify services
+        run: docker-compose ps
