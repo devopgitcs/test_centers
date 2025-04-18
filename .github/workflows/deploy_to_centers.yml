@@ -9,19 +9,17 @@ on:
         required: true
         type: string
       run_uuid:
-        description: Optional run UUID for logging
+        description: Optional run UUID for tracking
         required: false
         type: string
 
-# these top‑level permissions are correct for what we do below
 permissions:
-  contents: read    # to pull down centers.json
-  actions: none     # we call the runners API with our PAT instead
+  contents: read    # to read centers.json
+  actions: none     # we call the runners API with our PAT
 
 jobs:
   check-runners:
     runs-on: ubuntu-latest
-    # expose these for the downstream matrix
     outputs:
       valid_labels:    ${{ steps.filter.outputs.valid_labels }}
       missing_centers: ${{ steps.filter.outputs.missing_centers }}
@@ -30,59 +28,82 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Fetch all org‑level self‑hosted runners
+      - name: Show centers.json
+        run: |
+          echo "=== Centers mapping (.github/data/centers.json) ==="
+          cat .github/data/centers.json
+          echo
+
+      - name: Fetch all org-level self-hosted runners
         id: fetch
         run: |
+          echo "Calling GitHub API to list org runners..."
           curl -sSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
             https://api.github.com/orgs/devopgitcs/actions/runners \
           > runners.json
 
-      - name: Filter centers → runner labels
+          total=$(jq -r '.total_count' runners.json)
+          echo "Total runners returned: $total"
+          echo "First few runners (name + labels):"
+          jq -r '.runners[] | .name + " → [" + ( .labels[].name // "" ) + "]"' runners.json | head -n 10
+          echo
+
+      - name: Filter centers ↔ runner labels
         id: filter
         run: |
+          # prepare
           VALID=()
           MISSING=()
 
-          # for each center_id defined in centers.json
+          # iterate each center_id
           for center in $(jq -r 'keys_unsorted[]' .github/data/centers.json); do
-            # look up its configured runner_label
             label=$(jq -r --arg c "$center" '.[$c]' .github/data/centers.json)
+            echo "Checking center '$center' for runner-label '$label'..."
 
-            # if we see *any* runner with that label, accept it
             if jq -e --arg L "$label" '.runners[] | select(.labels[].name == $L)' runners.json > /dev/null; then
+              echo "  → Found runner using label '$label'"
               VALID+=("$label")
             else
+              echo "  → No runner with label '$label'"
               MISSING+=("$center")
             fi
           done
 
-          # helper to turn a bash array into a compact JSON array
-          to_json() { printf '%s\n' "$@" | jq -R . | jq -s -c .; }
+          # print summary
+          echo
+          echo "Summary:"
+          echo "  Valid runner labels: ${VALID[*]:-<none>}"
+          echo "  Missing centers:     ${MISSING[*]:-<none>}"
+          echo
 
-          # write both env‑style and set the step outputs
+          # helper to JSON‑ify a bash array
+          to_json() {
+            printf '%s\n' "$@" | jq -R . | jq -s -c .
+          }
+
+          # write outputs
           echo "valid_labels=$(to_json "${VALID[@]}")"    >> $GITHUB_OUTPUT
           echo "missing_centers=$(to_json "${MISSING[@]}")" >> $GITHUB_OUTPUT
 
       - name: Warn about missing centers
         if: ${{ steps.filter.outputs.missing_centers != '[]' }}
         run: |
-          echo "Skipping these centers (no runner found): ${{ steps.filter.outputs.missing_centers }}"
+          echo "WARNING: skipping these centers (no runner found):"
+          echo "  ${{ steps.filter.outputs.missing_centers }}"
 
-      - name: Fail if no valid runners remain
+      - name: Fail if no runners available
         if: ${{ steps.filter.outputs.valid_labels == '[]' }}
         run: |
-          echo "Error: No valid self‑hosted runners available. Exiting."
+          echo "ERROR: no valid self-hosted runners found; exiting."
           exit 1
 
   deploy:
     needs: check-runners
     strategy:
       matrix:
-        # we matrix over the *runner labels* we discovered
         label: ${{ fromJson(needs.check-runners.outputs.valid_labels) }}
-    # this pins us to self-hosted + the exact label
     runs-on:
       - self-hosted
       - ${{ matrix.label }}
@@ -93,11 +114,11 @@ jobs:
 
       - name: Deploy with Docker Compose
         run: |
-          echo "Deploying on runner-label: ${{ matrix.label }}"
-          echo "Using image tag:          ${{ inputs.tag_name }}"
-          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:                ${{ inputs.run_uuid }}"
-
-          # use your existing docker-compose.yml directly
+          echo "=== Deployment ==="
+          echo "Runner label: ${{ matrix.label }}"
+          echo "Image tag:    ${{ inputs.tag_name }}"
+          [ -n "${{ inputs.run_uuid }}" ] && echo "Run UUID:     ${{ inputs.run_uuid }}"
+          echo
           docker-compose pull
           docker-compose up -d --build
           docker-compose ps
