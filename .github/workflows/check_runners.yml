@@ -1,0 +1,44 @@
+# .github/workflows/list-runners.yml
+name: List Self‑Hosted Runners
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'The GitHub repository to query (owner/repo)'
+        required: true
+        type: string
+
+
+permissions:
+  contents: none      # we’re not checking out code
+  actions: none       # we’ll call the API with our PAT
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Self‑Hosted Runners API
+        run: |
+          curl -sSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.ACTIONS_PAT }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ inputs.repository }}/actions/runners" \
+          > runners.json
+
+      - name: Show Raw Output
+        run: |
+          echo "=== runners.json ==="
+          cat runners.json
+
+      - name: Summarize
+        run: |
+          total=$(jq .total_count   runners.json)
+          online=$(jq -r '.runners[] | select(.status=="online")  | .name' runners.json)
+          offline=$(jq -r '.runners[] | select(.status=="offline") | .name' runners.json)
+          echo "Total runners: $total"
+          echo "Online runners:"
+          printf '%s\n' "$online"
+          echo "Offline runners:"
+          printf '%s\n' "$offline"
